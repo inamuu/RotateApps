@@ -48,7 +48,7 @@ final class SwitcherPanel: NSPanel {
                 view.removeFromSuperview()
             }
             itemViews = windows.map {
-                SwitcherItemView(window: $0, size: layout.itemSize, showThumbnail: settings.showThumbnails)
+                SwitcherItemView(window: $0, size: layout.itemSize, showThumbnail: settings.showThumbnails, theme: settings.theme)
             }
 
             for rowIndex in 0..<layout.rows {

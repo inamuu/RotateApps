@@ -5,16 +5,29 @@ final class PreferencesWindowController: NSWindowController {
     private let settings: SettingsStore
     private weak var hotKeyController: HotKeyController?
     private let hotKeyButton = NSButton(title: "", target: nil, action: nil)
-    private let sizeSlider = NSSlider(value: 150, minValue: 110, maxValue: 240, target: nil, action: nil)
+    private let commandTabButton = NSButton(title: "Use Command + Tab", target: nil, action: nil)
+    private let resetShortcutButton = NSButton(title: "Reset Default", target: nil, action: nil)
+    private let sizeSlider = NSSlider(value: 150, minValue: 110, maxValue: 280, target: nil, action: nil)
+    private let themePopup = NSPopUpButton()
     private let thumbnailCheck = NSButton(checkboxWithTitle: "Show window thumbnails", target: nil, action: nil)
+    private let saveButton = NSButton(title: "Save Settings", target: nil, action: nil)
+    private let revertButton = NSButton(title: "Revert", target: nil, action: nil)
     private var localKeyMonitor: Any?
     private var isRecordingShortcut = false
+    private var pendingHotKey: HotKey
+    private var pendingItemSize: CGFloat
+    private var pendingShowThumbnails: Bool
+    private var pendingTheme: SwitcherTheme
 
     init(settings: SettingsStore, hotKeyController: HotKeyController?) {
         self.settings = settings
         self.hotKeyController = hotKeyController
+        self.pendingHotKey = settings.hotKey
+        self.pendingItemSize = settings.itemSize
+        self.pendingShowThumbnails = settings.showThumbnails
+        self.pendingTheme = settings.theme
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 210),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 380),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -34,27 +47,54 @@ final class PreferencesWindowController: NSWindowController {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.spacing = 16
-        stack.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
+        stack.edgeInsets = NSEdgeInsets(top: 26, left: 28, bottom: 26, right: 28)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        hotKeyButton.title = settings.hotKey.displayName
+        hotKeyButton.title = pendingHotKey.displayName
         hotKeyButton.target = self
         hotKeyButton.action = #selector(recordShortcut)
 
-        let hotKeyRow = labeledRow(label: "Shortcut", control: hotKeyButton)
+        commandTabButton.target = self
+        commandTabButton.action = #selector(useCommandTab)
+        resetShortcutButton.target = self
+        resetShortcutButton.action = #selector(resetShortcut)
 
-        sizeSlider.doubleValue = Double(settings.itemSize)
+        let shortcutControls = NSStackView(views: [hotKeyButton, commandTabButton, resetShortcutButton])
+        shortcutControls.orientation = .horizontal
+        shortcutControls.alignment = .centerY
+        shortcutControls.spacing = 8
+        let hotKeyRow = labeledRow(label: "Shortcut", control: shortcutControls)
+
+        sizeSlider.doubleValue = Double(pendingItemSize)
         sizeSlider.target = self
         sizeSlider.action = #selector(sizeChanged)
         let sizeRow = labeledRow(label: "Switcher size", control: sizeSlider)
 
-        thumbnailCheck.state = settings.showThumbnails ? .on : .off
+        for theme in SwitcherTheme.allCases {
+            themePopup.addItem(withTitle: theme.displayName)
+            themePopup.lastItem?.representedObject = theme.rawValue
+        }
+        themePopup.selectItem(withTitle: pendingTheme.displayName)
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged)
+        let themeRow = labeledRow(label: "Color theme", control: themePopup)
+
+        thumbnailCheck.state = pendingShowThumbnails ? .on : .off
         thumbnailCheck.target = self
         thumbnailCheck.action = #selector(thumbnailChanged)
 
+        saveButton.target = self
+        saveButton.action = #selector(saveSettings)
+        saveButton.keyEquivalent = "\r"
+        revertButton.target = self
+        revertButton.action = #selector(revertSettings)
+        let actionRow = actionButtonRow()
+
         stack.addArrangedSubview(hotKeyRow)
         stack.addArrangedSubview(sizeRow)
+        stack.addArrangedSubview(themeRow)
         stack.addArrangedSubview(thumbnailCheck)
+        stack.addArrangedSubview(actionRow)
         contentView.addSubview(stack)
 
         NSLayoutConstraint.activate([
@@ -68,7 +108,7 @@ final class PreferencesWindowController: NSWindowController {
     private func labeledRow(label: String, control: NSView) -> NSView {
         let text = NSTextField(labelWithString: label)
         text.font = .systemFont(ofSize: 13, weight: .medium)
-        text.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        text.widthAnchor.constraint(equalToConstant: 132).isActive = true
 
         let row = NSStackView(views: [text, control])
         row.orientation = .horizontal
@@ -77,7 +117,18 @@ final class PreferencesWindowController: NSWindowController {
         return row
     }
 
+    private func actionButtonRow() -> NSView {
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [spacer, revertButton, saveButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        return row
+    }
+
     @objc private func recordShortcut() {
+        stopRecordingShortcut()
         isRecordingShortcut = true
         hotKeyButton.title = "Press shortcut..."
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -91,8 +142,28 @@ final class PreferencesWindowController: NSWindowController {
         let carbonModifiers = event.modifierFlags.carbonModifiers
         guard carbonModifiers != 0 else { return }
         let displayName = ShortcutFormatter.displayName(for: event)
-        settings.hotKey = HotKey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonModifiers, displayName: displayName)
+        pendingHotKey = HotKey(keyCode: UInt32(event.keyCode), carbonModifiers: carbonModifiers, displayName: displayName)
         hotKeyButton.title = displayName
+        stopRecordingShortcut()
+    }
+
+    @objc private func useCommandTab() {
+        stopRecordingShortcut()
+        Permissions.requestAccessibilityIfNeeded(prompt: true)
+        applyShortcut(.commandTab)
+    }
+
+    @objc private func resetShortcut() {
+        stopRecordingShortcut()
+        applyShortcut(.optionTab)
+    }
+
+    private func applyShortcut(_ hotKey: HotKey) {
+        pendingHotKey = hotKey
+        hotKeyButton.title = hotKey.displayName
+    }
+
+    private func stopRecordingShortcut() {
         isRecordingShortcut = false
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
@@ -101,11 +172,45 @@ final class PreferencesWindowController: NSWindowController {
     }
 
     @objc private func sizeChanged() {
-        settings.itemSize = CGFloat(sizeSlider.doubleValue)
+        pendingItemSize = CGFloat(sizeSlider.doubleValue)
     }
 
     @objc private func thumbnailChanged() {
-        settings.showThumbnails = thumbnailCheck.state == .on
+        pendingShowThumbnails = thumbnailCheck.state == .on
+    }
+
+    @objc private func themeChanged() {
+        guard let rawValue = themePopup.selectedItem?.representedObject as? String,
+              let theme = SwitcherTheme(rawValue: rawValue) else { return }
+        pendingTheme = theme
+    }
+
+    @objc private func saveSettings() {
+        stopRecordingShortcut()
+        if settings.itemSize != pendingItemSize {
+            settings.itemSize = pendingItemSize
+        }
+        if settings.showThumbnails != pendingShowThumbnails {
+            settings.showThumbnails = pendingShowThumbnails
+        }
+        if settings.theme != pendingTheme {
+            settings.theme = pendingTheme
+        }
+        if settings.hotKey != pendingHotKey {
+            settings.hotKey = pendingHotKey
+        }
+    }
+
+    @objc private func revertSettings() {
+        stopRecordingShortcut()
+        pendingHotKey = settings.hotKey
+        pendingItemSize = settings.itemSize
+        pendingShowThumbnails = settings.showThumbnails
+        pendingTheme = settings.theme
+        hotKeyButton.title = pendingHotKey.displayName
+        sizeSlider.doubleValue = Double(pendingItemSize)
+        thumbnailCheck.state = pendingShowThumbnails ? .on : .off
+        themePopup.selectItem(withTitle: pendingTheme.displayName)
     }
 }
 

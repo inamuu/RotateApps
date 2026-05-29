@@ -6,6 +6,7 @@ RotateApps is a lightweight macOS window switcher inspired by Windows Alt+Tab. I
 
 - Global shortcut based app/window switching.
 - Configurable shortcut from the menu bar preferences.
+- `Command + Tab` can be selected from a preset button because macOS intercepts it before shortcut recording.
 - Hold `Shift` with the configured shortcut to rotate backward.
 - Separate entries for multiple windows in the same app.
 - Window title plus optional thumbnail so similar windows can be distinguished.
@@ -63,6 +64,8 @@ If thumbnails do not appear, open the menu bar item and choose `Request Screen R
 ## Default Shortcut
 
 The default shortcut is `Option + Tab`. Hold `Shift` with the shortcut to rotate backward. Open the menu bar item and choose `Preferences...` to change the shortcut.
+
+`Command + Tab` cannot be recorded normally because macOS handles it first. Use `Use Command + Tab` in Preferences to switch to that preset, and `Reset Default` to return to `Option + Tab`.
 
 ## Notes
 

@@ -18,10 +18,12 @@ final class SwitcherItemView: NSView {
     private let appLabel = NSTextField(labelWithString: "")
     private let size: CGFloat
     private let windowInfo: WindowInfo
+    private let theme: SwitcherTheme
 
-    init(window: WindowInfo, size: CGFloat, showThumbnail: Bool) {
+    init(window: WindowInfo, size: CGFloat, showThumbnail: Bool, theme: SwitcherTheme) {
         self.windowInfo = window
         self.size = size
+        self.theme = theme
         super.init(frame: NSRect(x: 0, y: 0, width: size, height: Self.itemHeight(for: size)))
         setup(showThumbnail: showThumbnail)
     }
@@ -38,14 +40,14 @@ final class SwitcherItemView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.borderWidth = 2
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.24).cgColor
+        layer?.backgroundColor = theme.cardColor.cgColor
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.wantsLayer = true
         imageView.layer?.cornerRadius = 6
         imageView.layer?.masksToBounds = true
-        imageView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        imageView.layer?.backgroundColor = theme.thumbnailColor.cgColor
         imageView.image = showThumbnail ? thumbnail() ?? windowInfo.appIcon : windowInfo.appIcon
 
         appLabel.stringValue = windowInfo.ownerName
@@ -83,8 +85,8 @@ final class SwitcherItemView: NSView {
     }
 
     private func updateSelection() {
-        layer?.borderColor = isSelected ? NSColor.controlAccentColor.cgColor : NSColor.clear.cgColor
-        layer?.backgroundColor = (isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.18) : NSColor.windowBackgroundColor.withAlphaComponent(0.24)).cgColor
+        layer?.borderColor = isSelected ? theme.accentColor.cgColor : NSColor.clear.cgColor
+        layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.20) : theme.cardColor).cgColor
     }
 
     private func thumbnail() -> NSImage? {

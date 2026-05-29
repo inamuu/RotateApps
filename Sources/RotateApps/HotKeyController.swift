@@ -14,12 +14,14 @@ final class HotKeyController {
     private var hotKeyRef: EventHotKeyRef?
     private var reverseHotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
+    private var eventTap: CFMachPort?
+    private var eventTapRunLoopSource: CFRunLoopSource?
     private var flagsMonitor: Any?
     private var isTrackingRelease = false
 
     init(settings: SettingsStore) {
         self.settings = settings
-        settings.onChange = { [weak self] in self?.restart() }
+        settings.onHotKeyChange = { [weak self] in self?.restart() }
     }
 
     func start() {
@@ -29,6 +31,7 @@ final class HotKeyController {
 
     func restart() {
         unregisterHotKey()
+        uninstallEventTap()
         registerHotKey()
     }
 
@@ -40,6 +43,7 @@ final class HotKeyController {
         if let flagsMonitor {
             NSEvent.removeMonitor(flagsMonitor)
         }
+        uninstallEventTap()
     }
 
     private func installEventHandlerIfNeeded() {
@@ -56,6 +60,11 @@ final class HotKeyController {
 
     private func registerHotKey() {
         let hotKey = settings.hotKey
+        if shouldUseEventTap(for: hotKey) {
+            installEventTap()
+            return
+        }
+
         var hotKeyID = EventHotKeyID(signature: OSType(0x52544150), id: 1)
         RegisterEventHotKey(hotKey.keyCode, hotKey.carbonModifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
 
@@ -63,6 +72,95 @@ final class HotKeyController {
             var reverseHotKeyID = EventHotKeyID(signature: OSType(0x52544150), id: 2)
             RegisterEventHotKey(hotKey.keyCode, hotKey.carbonModifiers | UInt32(shiftKey), reverseHotKeyID, GetApplicationEventTarget(), 0, &reverseHotKeyRef)
         }
+    }
+
+    private func shouldUseEventTap(for hotKey: HotKey) -> Bool {
+        hotKey.keyCode == HotKey.commandTab.keyCode
+            && hotKey.carbonModifiers & UInt32(cmdKey) != 0
+    }
+
+    private func installEventTap() {
+        guard eventTap == nil else { return }
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, userInfo in
+                guard let userInfo else { return Unmanaged.passUnretained(event) }
+                let controller = Unmanaged<HotKeyController>.fromOpaque(userInfo).takeUnretainedValue()
+                return controller.handleEventTap(type: type, event: event)
+            },
+            userInfo: selfPointer
+        ) else { return }
+
+        eventTap = tap
+        eventTapRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        if let eventTapRunLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), eventTapRunLoopSource, .commonModes)
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func uninstallEventTap() {
+        if let eventTapRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapRunLoopSource, .commonModes)
+            self.eventTapRunLoopSource = nil
+        }
+        if let eventTap {
+            CFMachPortInvalidate(eventTap)
+            self.eventTap = nil
+        }
+    }
+
+    private func handleEventTap(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let eventTap {
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard type == .keyDown, let direction = direction(for: event) else {
+            if type == .flagsChanged {
+                handleEventTapFlagsChanged(event)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onPressed?(direction)
+            self?.beginReleaseTracking()
+        }
+        return nil
+    }
+
+    private func handleEventTapFlagsChanged(_ event: CGEvent) {
+        guard isTrackingRelease else { return }
+        let hotKey = settings.hotKey
+        guard shouldUseEventTap(for: hotKey) else { return }
+        if !event.flags.contains(carbonModifiers: hotKey.carbonModifiers) {
+            DispatchQueue.main.async { [weak self] in
+                self?.stopReleaseTracking()
+                self?.onReleased?()
+            }
+        }
+    }
+
+    private func direction(for event: CGEvent) -> Direction? {
+        let hotKey = settings.hotKey
+        let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
+        guard keyCode == hotKey.keyCode else { return nil }
+
+        let flags = event.flags
+        guard flags.contains(carbonModifiers: hotKey.carbonModifiers) else { return nil }
+
+        if hotKey.carbonModifiers & UInt32(shiftKey) == 0, flags.contains(.maskShift) {
+            return .backward
+        }
+        return .forward
     }
 
     private func unregisterHotKey() {
@@ -127,5 +225,15 @@ extension NSEvent.ModifierFlags {
         if carbonModifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
         if carbonModifiers & UInt32(shiftKey) != 0 { flags.insert(.shift) }
         self = flags
+    }
+}
+
+extension CGEventFlags {
+    func contains(carbonModifiers: UInt32) -> Bool {
+        if carbonModifiers & UInt32(optionKey) != 0, !contains(.maskAlternate) { return false }
+        if carbonModifiers & UInt32(cmdKey) != 0, !contains(.maskCommand) { return false }
+        if carbonModifiers & UInt32(controlKey) != 0, !contains(.maskControl) { return false }
+        if carbonModifiers & UInt32(shiftKey) != 0, !contains(.maskShift) { return false }
+        return true
     }
 }
