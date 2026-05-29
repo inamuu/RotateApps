@@ -1,6 +1,9 @@
 import AppKit
 import ApplicationServices
 
+@_silgen_name("_AXUIElementGetWindow")
+private func AXUIElementGetWindowID(_ element: AXUIElement, _ identifier: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 final class SwitcherController {
     private let settings: SettingsStore
     private let enumerator = WindowEnumerator()
@@ -72,14 +75,20 @@ final class SwitcherController {
             return
         }
 
-        if let axWindow = bestMatch(in: axWindows, target: window) {
-            AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
-            AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(axWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, axWindow)
-        }
-
         NSRunningApplication(processIdentifier: window.ownerPID)?.activate(options: [.activateIgnoringOtherApps])
+        if let axWindow = bestMatch(in: axWindows, target: window) {
+            focus(axWindow: axWindow, appElement: appElement)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.focus(axWindow: axWindow, appElement: appElement)
+            }
+        }
+    }
+
+    private func focus(axWindow: AXUIElement, appElement: AXUIElement) {
+        AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, axWindow)
+        AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(axWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
     }
 
     private func bestMatch(in axWindows: [AXUIElement], target: WindowInfo) -> AXUIElement? {
@@ -100,6 +109,11 @@ final class SwitcherController {
     }
 
     private func axWindowNumber(_ axWindow: AXUIElement) -> CGWindowID? {
+        var windowID: CGWindowID = 0
+        if AXUIElementGetWindowID(axWindow, &windowID) == .success, windowID != 0 {
+            return windowID
+        }
+
         var axWindowNumber: CFTypeRef?
         if AXUIElementCopyAttributeValue(axWindow, "AXWindowNumber" as CFString, &axWindowNumber) == .success,
            let number = axWindowNumber as? NSNumber {
