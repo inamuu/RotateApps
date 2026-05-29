@@ -108,34 +108,35 @@ final class SwitcherPanel: NSPanel {
 
     private func gridLayout(itemCount: Int) -> GridLayout {
         guard itemCount > 0 else {
-            return GridLayout(columns: 1, rows: 1, itemSize: settings.itemSize, width: settings.itemSize + 28, height: settings.itemSize * 0.92 + 70)
+            return GridLayout(columns: 1, rows: 1, itemSize: settings.itemSize, width: settings.itemSize + 24, height: SwitcherItemView.itemHeight(for: settings.itemSize) + 24)
         }
 
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let maxWidth = visibleFrame.width * 0.92
         let maxHeight = visibleFrame.height * 0.84
         let gap: CGFloat = 10
-        let padding: CGFloat = 28
+        let padding: CGFloat = 24
 
         var itemSize = settings.itemSize
         var columns = min(itemCount, max(1, Int((maxWidth - padding + gap) / (itemSize + gap))))
         var rows = Int(ceil(Double(itemCount) / Double(columns)))
-        var height = CGFloat(rows) * (itemSize * 0.92 + 42) + CGFloat(max(0, rows - 1)) * gap + padding
+        var itemHeight = SwitcherItemView.itemHeight(for: itemSize)
+        var height = CGFloat(rows) * itemHeight + CGFloat(max(0, rows - 1)) * gap + padding
 
         while height > maxHeight, columns < itemCount {
             columns += 1
             rows = Int(ceil(Double(itemCount) / Double(columns)))
-            height = CGFloat(rows) * (itemSize * 0.92 + 42) + CGFloat(max(0, rows - 1)) * gap + padding
+            height = CGFloat(rows) * itemHeight + CGFloat(max(0, rows - 1)) * gap + padding
         }
 
         if height > maxHeight {
             let availableItemHeight = (maxHeight - padding - CGFloat(max(0, rows - 1)) * gap) / CGFloat(rows)
-            itemSize = max(82, min(itemSize, (availableItemHeight - 42) / 0.92))
+            itemSize = max(82, min(itemSize, (availableItemHeight - 45) / 0.52))
             columns = min(itemCount, max(1, Int((maxWidth - padding + gap) / (itemSize + gap))))
             rows = Int(ceil(Double(itemCount) / Double(columns)))
         }
 
-        let itemHeight = itemSize * 0.92 + 42
+        itemHeight = SwitcherItemView.itemHeight(for: itemSize)
         let width = min(maxWidth, CGFloat(columns) * itemSize + CGFloat(max(0, columns - 1)) * gap + padding)
         let finalHeight = min(maxHeight, CGFloat(rows) * itemHeight + CGFloat(max(0, rows - 1)) * gap + padding)
         return GridLayout(columns: columns, rows: rows, itemSize: itemSize, width: width, height: finalHeight)

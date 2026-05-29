@@ -1,6 +1,14 @@
 import AppKit
 
 final class SwitcherItemView: NSView {
+    static func itemHeight(for size: CGFloat) -> CGFloat {
+        thumbnailHeight(for: size) + 45
+    }
+
+    static func thumbnailHeight(for size: CGFloat) -> CGFloat {
+        max(48, size * 0.52)
+    }
+
     var isSelected: Bool = false {
         didSet { updateSelection() }
     }
@@ -14,7 +22,7 @@ final class SwitcherItemView: NSView {
     init(window: WindowInfo, size: CGFloat, showThumbnail: Bool) {
         self.windowInfo = window
         self.size = size
-        super.init(frame: NSRect(x: 0, y: 0, width: size, height: size * 0.92 + 42))
+        super.init(frame: NSRect(x: 0, y: 0, width: size, height: Self.itemHeight(for: size)))
         setup(showThumbnail: showThumbnail)
     }
 
@@ -23,7 +31,7 @@ final class SwitcherItemView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: size, height: size * 0.92 + 42)
+        NSSize(width: size, height: Self.itemHeight(for: size))
     }
 
     private func setup(showThumbnail: Bool) {
@@ -59,14 +67,14 @@ final class SwitcherItemView: NSView {
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: size),
-            heightAnchor.constraint(equalToConstant: size * 0.92 + 42),
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            imageView.heightAnchor.constraint(equalToConstant: size * 0.62),
-            appLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            appLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            appLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 8),
+            heightAnchor.constraint(equalToConstant: Self.itemHeight(for: size)),
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            imageView.heightAnchor.constraint(equalToConstant: Self.thumbnailHeight(for: size)),
+            appLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            appLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            appLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 6),
             titleLabel.leadingAnchor.constraint(equalTo: appLabel.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: appLabel.trailingAnchor),
             titleLabel.topAnchor.constraint(equalTo: appLabel.bottomAnchor, constant: 2)
