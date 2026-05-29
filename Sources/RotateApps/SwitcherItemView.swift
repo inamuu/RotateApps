@@ -2,7 +2,7 @@ import AppKit
 
 final class SwitcherItemView: NSView {
     static func itemHeight(for size: CGFloat) -> CGFloat {
-        thumbnailHeight(for: size) + 45
+        thumbnailHeight(for: size) + 51
     }
 
     static func thumbnailHeight(for size: CGFloat) -> CGFloat {
@@ -68,16 +68,16 @@ final class SwitcherItemView: NSView {
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: size),
             heightAnchor.constraint(equalToConstant: Self.itemHeight(for: size)),
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-            imageView.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            imageView.heightAnchor.constraint(equalToConstant: Self.thumbnailHeight(for: size)),
             appLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             appLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-            appLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 6),
+            appLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
             titleLabel.leadingAnchor.constraint(equalTo: appLabel.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: appLabel.trailingAnchor),
-            titleLabel.topAnchor.constraint(equalTo: appLabel.bottomAnchor, constant: 2)
+            titleLabel.topAnchor.constraint(equalTo: appLabel.bottomAnchor, constant: 2),
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            imageView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            imageView.heightAnchor.constraint(equalToConstant: Self.thumbnailHeight(for: size))
         ])
         updateSelection()
     }
