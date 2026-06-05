@@ -7,7 +7,8 @@ final class PreferencesWindowController: NSWindowController {
     private let hotKeyButton = NSButton(title: "", target: nil, action: nil)
     private let commandTabButton = NSButton(title: "Use Command + Tab", target: nil, action: nil)
     private let resetShortcutButton = NSButton(title: "Reset Default", target: nil, action: nil)
-    private let sizeSlider = NSSlider(value: 150, minValue: 110, maxValue: 280, target: nil, action: nil)
+    private let sizeSlider = NSSlider(value: 150, minValue: 100, maxValue: 560, target: nil, action: nil)
+    private let sizeValueLabel = NSTextField(labelWithString: "")
     private let themePopup = NSPopUpButton()
     private let thumbnailCheck = NSButton(checkboxWithTitle: "Show window thumbnails", target: nil, action: nil)
     private let saveButton = NSButton(title: "Save Settings", target: nil, action: nil)
@@ -68,7 +69,16 @@ final class PreferencesWindowController: NSWindowController {
         sizeSlider.doubleValue = Double(pendingItemSize)
         sizeSlider.target = self
         sizeSlider.action = #selector(sizeChanged)
-        let sizeRow = labeledRow(label: "Switcher size", control: sizeSlider)
+        sizeValueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        sizeValueLabel.alignment = .right
+        sizeValueLabel.widthAnchor.constraint(equalToConstant: 54).isActive = true
+        updateSizeValueLabel()
+        let sizeControls = NSStackView(views: [sizeSlider, sizeValueLabel])
+        sizeControls.orientation = .horizontal
+        sizeControls.alignment = .centerY
+        sizeControls.spacing = 10
+        sizeSlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        let sizeRow = labeledRow(label: "Switcher size", control: sizeControls)
 
         for theme in SwitcherTheme.allCases {
             themePopup.addItem(withTitle: theme.displayName)
@@ -173,6 +183,7 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func sizeChanged() {
         pendingItemSize = CGFloat(sizeSlider.doubleValue)
+        updateSizeValueLabel()
     }
 
     @objc private func thumbnailChanged() {
@@ -209,8 +220,13 @@ final class PreferencesWindowController: NSWindowController {
         pendingTheme = settings.theme
         hotKeyButton.title = pendingHotKey.displayName
         sizeSlider.doubleValue = Double(pendingItemSize)
+        updateSizeValueLabel()
         thumbnailCheck.state = pendingShowThumbnails ? .on : .off
         themePopup.selectItem(withTitle: pendingTheme.displayName)
+    }
+
+    private func updateSizeValueLabel() {
+        sizeValueLabel.stringValue = "\(Int(round(pendingItemSize))) px"
     }
 }
 

@@ -2,7 +2,7 @@ import AppKit
 
 final class SwitcherItemView: NSView {
     static func itemHeight(for size: CGFloat) -> CGFloat {
-        thumbnailHeight(for: size) + 51
+        thumbnailHeight(for: size) + 59
     }
 
     static func thumbnailHeight(for size: CGFloat) -> CGFloat {
@@ -16,6 +16,7 @@ final class SwitcherItemView: NSView {
     private let imageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let appLabel = NSTextField(labelWithString: "")
+    private let profileBadge = NSTextField(labelWithString: "")
     private let size: CGFloat
     private let windowInfo: WindowInfo
     private let theme: SwitcherTheme
@@ -50,14 +51,27 @@ final class SwitcherItemView: NSView {
         imageView.layer?.backgroundColor = theme.thumbnailColor.cgColor
         imageView.image = showThumbnail ? thumbnail() ?? windowInfo.appIcon : windowInfo.appIcon
 
-        appLabel.stringValue = windowInfo.ownerName
-        appLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        appLabel.stringValue = appDisplayName
+        appLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         appLabel.textColor = .labelColor
         appLabel.lineBreakMode = .byTruncatingTail
         appLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        profileBadge.stringValue = windowInfo.profileName ?? ""
+        profileBadge.font = .systemFont(ofSize: 11, weight: .semibold)
+        profileBadge.textColor = .labelColor
+        profileBadge.alignment = .center
+        profileBadge.lineBreakMode = .byTruncatingTail
+        profileBadge.maximumNumberOfLines = 1
+        profileBadge.translatesAutoresizingMaskIntoConstraints = false
+        profileBadge.isHidden = windowInfo.profileName == nil
+        profileBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        profileBadge.wantsLayer = true
+        profileBadge.layer?.cornerRadius = 5
+        profileBadge.layer?.backgroundColor = theme.accentColor.withAlphaComponent(0.24).cgColor
+
         titleLabel.stringValue = windowInfo.title
-        titleLabel.font = .systemFont(ofSize: 11)
+        titleLabel.font = .systemFont(ofSize: 13)
         titleLabel.textColor = .secondaryLabelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 1
@@ -65,20 +79,25 @@ final class SwitcherItemView: NSView {
 
         addSubview(imageView)
         addSubview(appLabel)
+        addSubview(profileBadge)
         addSubview(titleLabel)
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: size),
             heightAnchor.constraint(equalToConstant: Self.itemHeight(for: size)),
             appLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-            appLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-            appLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            appLabel.trailingAnchor.constraint(lessThanOrEqualTo: profileBadge.leadingAnchor, constant: -6),
+            appLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            profileBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            profileBadge.centerYAnchor.constraint(equalTo: appLabel.centerYAnchor),
+            profileBadge.widthAnchor.constraint(lessThanOrEqualToConstant: max(48, size * 0.38)),
+            profileBadge.heightAnchor.constraint(equalToConstant: 18),
             titleLabel.leadingAnchor.constraint(equalTo: appLabel.leadingAnchor),
-            titleLabel.trailingAnchor.constraint(equalTo: appLabel.trailingAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
             titleLabel.topAnchor.constraint(equalTo: appLabel.bottomAnchor, constant: 2),
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             imageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
-            imageView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            imageView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7),
             imageView.heightAnchor.constraint(equalToConstant: Self.thumbnailHeight(for: size))
         ])
         updateSelection()
@@ -87,6 +106,14 @@ final class SwitcherItemView: NSView {
     private func updateSelection() {
         layer?.borderColor = isSelected ? theme.accentColor.cgColor : NSColor.clear.cgColor
         layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.20) : theme.cardColor).cgColor
+        profileBadge.layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.34) : theme.accentColor.withAlphaComponent(0.24)).cgColor
+    }
+
+    private var appDisplayName: String {
+        guard let profileName = windowInfo.profileName else {
+            return windowInfo.ownerName
+        }
+        return "\(windowInfo.ownerName) - \(profileName)"
     }
 
     private func thumbnail() -> NSImage? {

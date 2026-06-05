@@ -15,5 +15,6 @@ mkdir -p "$MACOS_DIR" "$CONTENTS_DIR/Resources"
 cp "$ROOT_DIR/.build/release/RotateApps" "$MACOS_DIR/RotateApps"
 cp "$ROOT_DIR/Support/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$ROOT_DIR/Support/AppIcon.icns" "$CONTENTS_DIR/Resources/AppIcon.icns"
+codesign --force --deep --sign "${ROTATEAPPS_CODESIGN_IDENTITY:--}" "$APP_DIR" >/dev/null
 
 echo "$APP_DIR"

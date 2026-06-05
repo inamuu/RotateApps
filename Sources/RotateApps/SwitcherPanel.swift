@@ -131,7 +131,7 @@ final class SwitcherPanel: NSPanel {
 
         if height > maxHeight {
             let availableItemHeight = (maxHeight - padding - CGFloat(max(0, rows - 1)) * gap) / CGFloat(rows)
-            itemSize = max(82, min(itemSize, (availableItemHeight - 45) / 0.52))
+            itemSize = max(82, min(itemSize, (availableItemHeight - 59) / 0.52))
             columns = min(itemCount, max(1, Int((maxWidth - padding + gap) / (itemSize + gap))))
             rows = Int(ceil(Double(itemCount) / Double(columns)))
         }
