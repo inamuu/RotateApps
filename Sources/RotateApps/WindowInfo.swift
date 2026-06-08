@@ -39,6 +39,9 @@ final class WindowEnumerator {
 
             let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) ?? .zero
             guard bounds.width > 80, bounds.height > 60 else { return nil }
+            if chromeProfiles.shouldExcludeWindow(for: app, windowID: windowID) {
+                return nil
+            }
             return makeWindow(windowID: windowID, ownerPID: ownerPID, ownerName: ownerName, info: info, bounds: bounds, app: app)
         }
         .sorted { lhs, rhs in
@@ -97,6 +100,19 @@ final class ChromeProfileResolver {
         }
 
         return profileNameFromAccessibility(app: app, windowID: windowID, userDataDirectories: userDataDirectories)
+    }
+
+    func shouldExcludeWindow(for app: NSRunningApplication, windowID: CGWindowID) -> Bool {
+        guard isChromeFamily(app) else { return false }
+        guard let window = axWindow(app: app, windowID: windowID) else { return false }
+
+        let role = axString(window, attribute: kAXRoleAttribute)
+        let subrole = axString(window, attribute: kAXSubroleAttribute)
+        if role == kAXWindowRole, subrole == kAXStandardWindowSubrole {
+            return false
+        }
+
+        return true
     }
 
     private func isChromeFamily(_ app: NSRunningApplication) -> Bool {
@@ -158,15 +174,22 @@ final class ChromeProfileResolver {
         let knownProfileNames = userDataDirectories.flatMap { profileNames(userDataDirectory: $0) }
         guard !knownProfileNames.isEmpty else { return nil }
 
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement],
-              let window = windows.first(where: { axWindowNumber($0) == windowID }) else {
+        guard let window = axWindow(app: app, windowID: windowID) else {
             return nil
         }
 
         return firstProfileName(in: window, profileNames: knownProfileNames)
+    }
+
+    private func axWindow(app: NSRunningApplication, windowID: CGWindowID) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else {
+            return nil
+        }
+
+        return windows.first { axWindowNumber($0) == windowID }
     }
 
     private func profileNames(userDataDirectory: URL) -> [String] {
@@ -211,6 +234,14 @@ final class ChromeProfileResolver {
             }
         }
         return nil
+    }
+
+    private func axString(_ element: AXUIElement, attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
     }
 
     private func axWindowNumber(_ axWindow: AXUIElement) -> CGWindowID? {
