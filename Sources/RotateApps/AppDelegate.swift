@@ -6,8 +6,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyController: HotKeyController?
     private var switcherController: SwitcherController?
     private var preferencesWindow: PreferencesWindowController?
+    private var warmUpWorkItem: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AXSupport.applyGlobalTimeout()
+        // A previous crash may have left the macOS switcher disabled; start from a known state.
+        NativeAppSwitcher.restoreIfLeftDisabled()
+
         let switcherController = SwitcherController(settings: settings)
         let hotKeyController = HotKeyController(settings: settings)
         hotKeyController.onPressed = { [weak switcherController] direction in
@@ -22,6 +27,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         hotKeyController.start()
         Permissions.requestAccessibilityIfNeeded()
+        observeWindowChanges()
+        scheduleWarmUp()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // The symbolic hotkey state persists after the process exits.
+        hotKeyController?.restoreNativeAppSwitcher()
+    }
+
+    /// Keeps the Accessibility-backed window details warm so the first press is already accurate.
+    private func observeWindowChanges() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification
+        ] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.scheduleWarmUp()
+            }
+        }
+    }
+
+    private func scheduleWarmUp() {
+        warmUpWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.switcherController?.warmUpWindowDetails()
+        }
+        warmUpWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
     }
 
     private func setupStatusItem() {

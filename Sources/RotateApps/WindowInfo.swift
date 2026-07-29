@@ -14,10 +14,50 @@ struct WindowInfo: Identifiable {
     let appIcon: NSImage
 }
 
+/// A window straight out of the CoreGraphics window list, before any Accessibility lookup.
+struct WindowCandidate {
+    let id: CGWindowID
+    let ownerPID: pid_t
+    let ownerName: String
+    let title: String
+    let bounds: CGRect
+    let app: NSRunningApplication
+}
+
 final class WindowEnumerator {
     private let chromeProfiles = ChromeProfileResolver()
 
+    /// Never blocks on Accessibility: everything that needs it comes from the resolver cache and is
+    /// filled in by `resolveDetails`. Keeping this cheap is what keeps the hotkey responsive.
     func listWindows() -> [WindowInfo] {
+        candidates()
+            .compactMap { candidate in
+                let details = chromeProfiles.details(for: candidate)
+                guard !details.isExcluded else { return nil }
+                return makeWindow(candidate: candidate, profileName: details.profileName)
+            }
+            .sorted { lhs, rhs in
+                lhs.sortKey.localizedStandardCompare(rhs.sortKey) == .orderedAscending
+            }
+    }
+
+    /// Resolves the Accessibility-backed details (Chrome popup filtering, profile names) on a
+    /// background queue. `completion` reports whether the cache changed, i.e. whether a visible
+    /// list built before this call is now stale.
+    func resolveDetails(completion: @escaping (Bool) -> Void) {
+        let pending = candidates()
+        DispatchQueue.global(qos: .userInitiated).async { [chromeProfiles] in
+            let changed = chromeProfiles.resolveMissingDetails(for: pending)
+            DispatchQueue.main.async { completion(changed) }
+        }
+    }
+
+    /// Warms the cache so the first press after a window change is already accurate.
+    func warmUp() {
+        resolveDetails { _ in }
+    }
+
+    private func candidates() -> [WindowCandidate] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let rawWindows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -39,27 +79,29 @@ final class WindowEnumerator {
 
             let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) ?? .zero
             guard bounds.width > 80, bounds.height > 60 else { return nil }
-            if chromeProfiles.shouldExcludeWindow(for: app, windowID: windowID) {
-                return nil
-            }
-            return makeWindow(windowID: windowID, ownerPID: ownerPID, ownerName: ownerName, info: info, bounds: bounds, app: app)
-        }
-        .sorted { lhs, rhs in
-            lhs.sortKey.localizedStandardCompare(rhs.sortKey) == .orderedAscending
+
+            let title = (info[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled Window"
+            return WindowCandidate(
+                id: windowID,
+                ownerPID: ownerPID,
+                ownerName: ownerName,
+                title: title,
+                bounds: bounds,
+                app: app
+            )
         }
     }
 
-    private func makeWindow(windowID: UInt32, ownerPID: pid_t, ownerName: String, info: [String: Any], bounds: CGRect, app: NSRunningApplication) -> WindowInfo {
-        let title = (info[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled Window"
-        let icon = app.icon ?? NSWorkspace.shared.icon(forFileType: "app")
+    private func makeWindow(candidate: WindowCandidate, profileName: String?) -> WindowInfo {
+        let icon = candidate.app.icon ?? NSWorkspace.shared.icon(forFileType: "app")
         icon.size = NSSize(width: 64, height: 64)
         return WindowInfo(
-            id: windowID,
-            ownerPID: ownerPID,
-            ownerName: ownerName,
-            profileName: chromeProfiles.profileName(for: app, pid: ownerPID, windowID: windowID),
-            title: title,
-            bounds: bounds,
+            id: candidate.id,
+            ownerPID: candidate.ownerPID,
+            ownerName: candidate.ownerName,
+            profileName: profileName,
+            title: candidate.title,
+            bounds: candidate.bounds,
             appIcon: icon
         )
     }
@@ -76,43 +118,116 @@ private extension WindowInfo {
     }
 }
 
+struct ChromeWindowDetails {
+    static let included = ChromeWindowDetails(profileName: nil, isExcluded: false)
+
+    let profileName: String?
+    let isExcluded: Bool
+}
+
+/// Resolves Chrome-family profile names and filters non-standard Chrome windows.
+///
+/// The Accessibility part (window subrole, and the tree walk used when the profile can't be read
+/// from the process arguments) is slow and can block for as long as the target app takes to answer,
+/// so it is cached per window and only ever computed off the main thread.
 final class ChromeProfileResolver {
+    private let lock = NSLock()
     private var localStateCache: [URL: [String: String]] = [:]
+    private var argumentsCache: [pid_t: [String]] = [:]
+    private var windowDetailsCache: [CGWindowID: ChromeWindowDetails] = [:]
 
-    func profileName(for app: NSRunningApplication, pid: pid_t, windowID: CGWindowID) -> String? {
-        guard isChromeFamily(app) else { return nil }
-        let arguments = processArguments(pid: pid)
-        let userDataDirectories = userDataDirectory(from: arguments).map { [$0] } ?? defaultUserDataDirectories(for: app)
+    /// Synchronous, non-blocking. Unresolved Chrome windows are shown (never hidden) with whatever
+    /// profile name the process arguments give us, and corrected once `resolveMissingDetails` runs.
+    func details(for candidate: WindowCandidate) -> ChromeWindowDetails {
+        guard isChromeFamily(candidate.app) else { return .included }
 
-        if let profileDirectory = profileDirectory(from: arguments) {
-            if let userDataDirectory = userDataDirectory(from: arguments),
-               let name = displayName(for: profileDirectory, userDataDirectory: userDataDirectory) {
-                return name
-            }
+        lock.lock()
+        let cached = windowDetailsCache[candidate.id]
+        lock.unlock()
+        if let cached { return cached }
 
-            for directory in userDataDirectories {
-                if let name = displayName(for: profileDirectory, userDataDirectory: directory) {
-                    return name
-                }
-            }
-
-            return profileDirectory
-        }
-
-        return profileNameFromAccessibility(app: app, windowID: windowID, userDataDirectories: userDataDirectories)
+        return ChromeWindowDetails(profileName: profileNameFromArguments(candidate: candidate), isExcluded: false)
     }
 
-    func shouldExcludeWindow(for app: NSRunningApplication, windowID: CGWindowID) -> Bool {
-        guard isChromeFamily(app) else { return false }
-        guard let window = axWindow(app: app, windowID: windowID) else { return false }
+    /// Call from a background queue only.
+    /// - Returns: whether any cache entry was added or removed.
+    func resolveMissingDetails(for candidates: [WindowCandidate]) -> Bool {
+        let liveWindowIDs = Set(candidates.map(\.id))
+
+        lock.lock()
+        let staleWindowIDs = windowDetailsCache.keys.filter { !liveWindowIDs.contains($0) }
+        for windowID in staleWindowIDs {
+            windowDetailsCache.removeValue(forKey: windowID)
+        }
+        let resolvedWindowIDs = Set(windowDetailsCache.keys)
+        lock.unlock()
+
+        var didResolve = false
+        for candidate in candidates where isChromeFamily(candidate.app) && !resolvedWindowIDs.contains(candidate.id) {
+            let details = resolveDetails(for: candidate)
+            lock.lock()
+            windowDetailsCache[candidate.id] = details
+            lock.unlock()
+            didResolve = true
+        }
+
+        return didResolve || !staleWindowIDs.isEmpty
+    }
+
+    private func resolveDetails(for candidate: WindowCandidate) -> ChromeWindowDetails {
+        guard let window = axWindow(app: candidate.app, windowID: candidate.id) else {
+            return ChromeWindowDetails(profileName: profileNameFromArguments(candidate: candidate), isExcluded: false)
+        }
 
         let role = axString(window, attribute: kAXRoleAttribute)
         let subrole = axString(window, attribute: kAXSubroleAttribute)
-        if role == kAXWindowRole, subrole == kAXStandardWindowSubrole {
-            return false
+        guard role == kAXWindowRole, subrole == kAXStandardWindowSubrole else {
+            return ChromeWindowDetails(profileName: nil, isExcluded: true)
         }
 
-        return true
+        if let profileName = profileNameFromArguments(candidate: candidate) {
+            return ChromeWindowDetails(profileName: profileName, isExcluded: false)
+        }
+
+        let userDataDirectories = self.userDataDirectories(for: candidate)
+        let profileName = profileNameFromAccessibility(window: window, userDataDirectories: userDataDirectories)
+        return ChromeWindowDetails(profileName: profileName, isExcluded: false)
+    }
+
+    private func profileNameFromArguments(candidate: WindowCandidate) -> String? {
+        let arguments = arguments(for: candidate.ownerPID)
+        guard let profileDirectory = profileDirectory(from: arguments) else { return nil }
+
+        if let userDataDirectory = userDataDirectory(from: arguments),
+           let name = displayName(for: profileDirectory, userDataDirectory: userDataDirectory) {
+            return name
+        }
+
+        for directory in userDataDirectories(for: candidate) {
+            if let name = displayName(for: profileDirectory, userDataDirectory: directory) {
+                return name
+            }
+        }
+
+        return profileDirectory
+    }
+
+    private func userDataDirectories(for candidate: WindowCandidate) -> [URL] {
+        let arguments = arguments(for: candidate.ownerPID)
+        return userDataDirectory(from: arguments).map { [$0] } ?? defaultUserDataDirectories(for: candidate.app)
+    }
+
+    private func arguments(for pid: pid_t) -> [String] {
+        lock.lock()
+        let cached = argumentsCache[pid]
+        lock.unlock()
+        if let cached { return cached }
+
+        let arguments = processArguments(pid: pid)
+        lock.lock()
+        argumentsCache[pid] = arguments
+        lock.unlock()
+        return arguments
     }
 
     private func isChromeFamily(_ app: NSRunningApplication) -> Bool {
@@ -170,19 +285,14 @@ final class ChromeProfileResolver {
         }
     }
 
-    private func profileNameFromAccessibility(app: NSRunningApplication, windowID: CGWindowID, userDataDirectories: [URL]) -> String? {
+    private func profileNameFromAccessibility(window: AXUIElement, userDataDirectories: [URL]) -> String? {
         let knownProfileNames = userDataDirectories.flatMap { profileNames(userDataDirectory: $0) }
         guard !knownProfileNames.isEmpty else { return nil }
-
-        guard let window = axWindow(app: app, windowID: windowID) else {
-            return nil
-        }
-
         return firstProfileName(in: window, profileNames: knownProfileNames)
     }
 
     private func axWindow(app: NSRunningApplication, windowID: CGWindowID) -> AXUIElement? {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let appElement = AXSupport.application(pid: app.processIdentifier)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
               let windows = value as? [AXUIElement] else {
@@ -259,9 +369,18 @@ final class ChromeProfileResolver {
     }
 
     private func displayName(for profileDirectory: String, userDataDirectory: URL) -> String? {
-        let cache = localStateCache[userDataDirectory] ?? loadProfileNames(userDataDirectory: userDataDirectory)
-        localStateCache[userDataDirectory] = cache
-        return cache[profileDirectory]
+        lock.lock()
+        var cache = localStateCache[userDataDirectory]
+        lock.unlock()
+
+        if cache == nil {
+            let loaded = loadProfileNames(userDataDirectory: userDataDirectory)
+            lock.lock()
+            localStateCache[userDataDirectory] = loaded
+            lock.unlock()
+            cache = loaded
+        }
+        return cache?[profileDirectory]
     }
 
     private func loadProfileNames(userDataDirectory: URL) -> [String: String] {

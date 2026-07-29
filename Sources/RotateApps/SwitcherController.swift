@@ -10,19 +10,42 @@ final class SwitcherController {
     private var panel: SwitcherPanel?
     private var windows: [WindowInfo] = []
     private var selectedIndex = 0
+    private var sessionID = 0
 
     init(settings: SettingsStore) {
         self.settings = settings
     }
 
+    func warmUpWindowDetails() {
+        enumerator.warmUp()
+    }
+
     func cycle(direction: HotKeyController.Direction) {
         if panel == nil {
+            sessionID += 1
             windows = enumerator.listWindows()
             selectedIndex = initialSelection(direction: direction)
             showPanel()
+            refreshAfterResolvingDetails()
         } else {
             selectedIndex = nextSelection(direction: direction)
             panel?.update(windows: windows, selectedIndex: selectedIndex)
+        }
+    }
+
+    /// The first list is built without Accessibility, so Chrome popups may still be in it and some
+    /// profile badges may be missing. Rebuild once the resolver has filled its cache.
+    private func refreshAfterResolvingDetails() {
+        let session = sessionID
+        enumerator.resolveDetails { [weak self] changed in
+            guard let self, changed, session == self.sessionID, let panel = self.panel else { return }
+            let selectedWindowID = self.windows.indices.contains(self.selectedIndex) ? self.windows[self.selectedIndex].id : nil
+            let refreshed = self.enumerator.listWindows()
+            guard !refreshed.isEmpty, refreshed.map(\.id) != self.windows.map(\.id) else { return }
+            self.windows = refreshed
+            self.selectedIndex = selectedWindowID.flatMap { id in refreshed.firstIndex { $0.id == id } }
+                ?? min(self.selectedIndex, refreshed.count - 1)
+            panel.update(windows: refreshed, selectedIndex: self.selectedIndex)
         }
     }
 
@@ -67,7 +90,7 @@ final class SwitcherController {
     }
 
     private func activate(window: WindowInfo) {
-        let appElement = AXUIElementCreateApplication(window.ownerPID)
+        let appElement = AXSupport.application(pid: window.ownerPID, timeout: AXSupport.activationTimeout)
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value)
         guard result == .success, let axWindows = value as? [AXUIElement] else {

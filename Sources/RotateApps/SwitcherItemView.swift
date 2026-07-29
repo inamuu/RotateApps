@@ -49,7 +49,10 @@ final class SwitcherItemView: NSView {
         imageView.layer?.cornerRadius = 6
         imageView.layer?.masksToBounds = true
         imageView.layer?.backgroundColor = theme.thumbnailColor.cgColor
-        imageView.image = showThumbnail ? thumbnail() ?? windowInfo.appIcon : windowInfo.appIcon
+        imageView.image = windowInfo.appIcon
+        if showThumbnail {
+            loadThumbnail()
+        }
 
         appLabel.stringValue = appDisplayName
         appLabel.font = .systemFont(ofSize: 16, weight: .semibold)
@@ -116,13 +119,21 @@ final class SwitcherItemView: NSView {
         return "\(windowInfo.ownerName) - \(profileName)"
     }
 
-    private func thumbnail() -> NSImage? {
-        guard let cgImage = CGWindowListCreateImage(
-            .null,
-            [.optionIncludingWindow],
-            windowInfo.id,
-            [.bestResolution, .boundsIgnoreFraming]
-        ) else { return nil }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    /// Capturing a window is slow enough that doing it while building the panel delays the switcher
+    /// itself, so the app icon is shown first and replaced when the capture arrives.
+    private func loadThumbnail() {
+        let windowID = windowInfo.id
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let cgImage = CGWindowListCreateImage(
+                .null,
+                [.optionIncludingWindow],
+                windowID,
+                [.bestResolution, .boundsIgnoreFraming]
+            ) else { return }
+            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            DispatchQueue.main.async {
+                self?.imageView.image = image
+            }
+        }
     }
 }
