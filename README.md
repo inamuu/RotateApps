@@ -36,6 +36,14 @@ For a launchable app bundle:
 open .build/RotateApps.app
 ```
 
+To build, replace the copy in `/Applications`, and relaunch it in one step:
+
+```sh
+./Scripts/install-app.sh
+```
+
+The running instance is quit through AppleScript first so it can restore the native `Command + Tab` shortcut. Set `ROTATEAPPS_INSTALL_DIR` to install somewhere else.
+
 To create the same zip archive used for releases:
 
 ```sh

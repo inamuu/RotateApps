@@ -27,18 +27,26 @@ struct WindowCandidate {
 final class WindowEnumerator {
     private let chromeProfiles = ChromeProfileResolver()
 
+    /// The focused window as of the last `listWindows()` call. The returned list is sorted for a
+    /// stable grid, so rotation needs this to know where it starts from.
+    private(set) var frontmostWindowID: CGWindowID?
+
     /// Never blocks on Accessibility: everything that needs it comes from the resolver cache and is
     /// filled in by `resolveDetails`. Keeping this cheap is what keeps the hotkey responsive.
     func listWindows() -> [WindowInfo] {
-        candidates()
-            .compactMap { candidate in
-                let details = chromeProfiles.details(for: candidate)
-                guard !details.isExcluded else { return nil }
-                return makeWindow(candidate: candidate, profileName: details.profileName)
-            }
-            .sorted { lhs, rhs in
-                lhs.sortKey.localizedStandardCompare(rhs.sortKey) == .orderedAscending
-            }
+        // `candidates()` is in CoreGraphics front-to-back order, which this keeps until the sort.
+        let visible = candidates().compactMap { candidate -> WindowInfo? in
+            let details = chromeProfiles.details(for: candidate)
+            guard !details.isExcluded else { return nil }
+            return makeWindow(candidate: candidate, profileName: details.profileName)
+        }
+
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        frontmostWindowID = visible.first { $0.ownerPID == frontmostPID }?.id ?? visible.first?.id
+
+        return visible.sorted { lhs, rhs in
+            lhs.sortKey.localizedStandardCompare(rhs.sortKey) == .orderedAscending
+        }
     }
 
     /// Resolves the Accessibility-backed details (Chrome popup filtering, profile names) on a

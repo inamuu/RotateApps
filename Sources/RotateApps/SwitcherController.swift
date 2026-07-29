@@ -74,9 +74,19 @@ final class SwitcherController {
         selectedIndex = 0
     }
 
+    /// Starts from the window that currently has focus, so a single press always lands on a
+    /// different window instead of on wherever the sorted list happens to begin.
     private func initialSelection(direction: HotKeyController.Direction) -> Int {
         guard windows.count > 1 else { return 0 }
-        return direction == .forward ? 1 : windows.count - 1
+        let currentIndex = enumerator.frontmostWindowID.flatMap { id in
+            windows.firstIndex { $0.id == id }
+        } ?? 0
+        switch direction {
+        case .forward:
+            return (currentIndex + 1) % windows.count
+        case .backward:
+            return (currentIndex - 1 + windows.count) % windows.count
+        }
     }
 
     private func nextSelection(direction: HotKeyController.Direction) -> Int {
