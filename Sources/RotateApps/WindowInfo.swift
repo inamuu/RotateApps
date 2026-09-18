@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import UniformTypeIdentifiers
 
 @_silgen_name("_AXUIElementGetWindow")
 private func AXUIElementGetWindowID(_ element: AXUIElement, _ identifier: UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -26,6 +27,7 @@ struct WindowCandidate {
 
 final class WindowEnumerator {
     private let chromeProfiles = ChromeProfileResolver()
+    private var iconCache: [pid_t: NSImage] = [:]
 
     /// The focused window as of the last `listWindows()` call. The returned list is sorted for a
     /// stable grid, so rotation needs this to know where it starts from.
@@ -35,7 +37,8 @@ final class WindowEnumerator {
     /// filled in by `resolveDetails`. Keeping this cheap is what keeps the hotkey responsive.
     func listWindows() -> [WindowInfo] {
         // `candidates()` is in CoreGraphics front-to-back order, which this keeps until the sort.
-        let visible = candidates().compactMap { candidate -> WindowInfo? in
+        let candidates = candidates()
+        let visible = candidates.compactMap { candidate -> WindowInfo? in
             let details = chromeProfiles.details(for: candidate)
             guard !details.isExcluded else { return nil }
             return makeWindow(candidate: candidate, profileName: details.profileName)
@@ -44,8 +47,24 @@ final class WindowEnumerator {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         frontmostWindowID = visible.first { $0.ownerPID == frontmostPID }?.id ?? visible.first?.id
 
+        let livePIDs = Set(candidates.map(\.ownerPID))
+        iconCache = iconCache.filter { livePIDs.contains($0.key) }
+
+        // Sorting by app, then profile, then window number keeps the grid stable across sessions.
+        // Titles change every time a tab switches, so they are deliberately not part of the key.
         return visible.sorted { lhs, rhs in
-            lhs.sortKey.localizedStandardCompare(rhs.sortKey) == .orderedAscending
+            let byApp = lhs.ownerName.localizedStandardCompare(rhs.ownerName)
+            if byApp != .orderedSame { return byApp == .orderedAscending }
+            let byProfile = (lhs.profileName ?? "").localizedStandardCompare(rhs.profileName ?? "")
+            if byProfile != .orderedSame { return byProfile == .orderedAscending }
+            return lhs.id < rhs.id
+        }
+    }
+
+    /// Window IDs the switcher would show right now, used to keep the thumbnail cache warm.
+    func visibleWindowIDs() -> [CGWindowID] {
+        candidates().compactMap { candidate in
+            chromeProfiles.details(for: candidate).isExcluded ? nil : candidate.id
         }
     }
 
@@ -71,6 +90,7 @@ final class WindowEnumerator {
             return []
         }
 
+        var appsByPID: [pid_t: NSRunningApplication?] = [:]
         return rawWindows.compactMap { info in
             guard
                 let windowID = info[kCGWindowNumber as String] as? UInt32,
@@ -82,8 +102,14 @@ final class WindowEnumerator {
                 let boundsDict = info[kCGWindowBounds as String] as? [String: Any]
             else { return nil }
 
-            guard let app = NSRunningApplication(processIdentifier: ownerPID),
-                  app.activationPolicy == .regular else { return nil }
+            let app: NSRunningApplication?
+            if let known = appsByPID[ownerPID] {
+                app = known
+            } else {
+                app = NSRunningApplication(processIdentifier: ownerPID)
+                appsByPID[ownerPID] = app
+            }
+            guard let app, app.activationPolicy == .regular else { return nil }
 
             let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) ?? .zero
             guard bounds.width > 80, bounds.height > 60 else { return nil }
@@ -101,33 +127,33 @@ final class WindowEnumerator {
     }
 
     private func makeWindow(candidate: WindowCandidate, profileName: String?) -> WindowInfo {
-        let icon = candidate.app.icon ?? NSWorkspace.shared.icon(forFileType: "app")
-        icon.size = NSSize(width: 64, height: 64)
-        return WindowInfo(
+        WindowInfo(
             id: candidate.id,
             ownerPID: candidate.ownerPID,
             ownerName: candidate.ownerName,
             profileName: profileName,
             title: candidate.title,
             bounds: candidate.bounds,
-            appIcon: icon
+            appIcon: icon(for: candidate.app)
         )
     }
-}
 
-private extension WindowInfo {
-    var sortKey: String {
-        [
-            ownerName,
-            profileName ?? "",
-            title,
-            String(id)
-        ].joined(separator: "\u{0}")
+    /// `NSRunningApplication.icon` hands back a shared image, so it is copied once per process
+    /// instead of being resized in place on every listing.
+    private func icon(for app: NSRunningApplication) -> NSImage {
+        let pid = app.processIdentifier
+        if let cached = iconCache[pid] { return cached }
+        let source = app.icon ?? NSWorkspace.shared.icon(for: .application)
+        let icon = (source.copy() as? NSImage) ?? source
+        icon.size = NSSize(width: 64, height: 64)
+        iconCache[pid] = icon
+        return icon
     }
 }
 
 struct ChromeWindowDetails {
     static let included = ChromeWindowDetails(profileName: nil, isExcluded: false)
+    static let excluded = ChromeWindowDetails(profileName: nil, isExcluded: true)
 
     let profileName: String?
     let isExcluded: Bool
@@ -135,26 +161,22 @@ struct ChromeWindowDetails {
 
 /// Resolves Chrome-family profile names and filters non-standard Chrome windows.
 ///
-/// The Accessibility part (window subrole, and the tree walk used when the profile can't be read
-/// from the process arguments) is slow and can block for as long as the target app takes to answer,
-/// so it is cached per window and only ever computed off the main thread.
+/// Chrome puts the profile into its Accessibility window title (`Page - Google Chrome - Name`)
+/// whenever more than one profile exists, so one attribute read per window is enough. The
+/// CoreGraphics title cannot be used for this: it is truncated and lacks the suffix. Accessibility
+/// calls block until the target answers, so results are cached per window and only ever computed
+/// off the main thread.
 final class ChromeProfileResolver {
     private let lock = NSLock()
-    private var localStateCache: [URL: [String: String]] = [:]
-    private var argumentsCache: [pid_t: [String]] = [:]
     private var windowDetailsCache: [CGWindowID: ChromeWindowDetails] = [:]
 
-    /// Synchronous, non-blocking. Unresolved Chrome windows are shown (never hidden) with whatever
-    /// profile name the process arguments give us, and corrected once `resolveMissingDetails` runs.
+    /// Synchronous, non-blocking. Unresolved Chrome windows are shown without a profile badge and
+    /// corrected in place once `resolveMissingDetails` runs.
     func details(for candidate: WindowCandidate) -> ChromeWindowDetails {
         guard isChromeFamily(candidate.app) else { return .included }
-
         lock.lock()
-        let cached = windowDetailsCache[candidate.id]
-        lock.unlock()
-        if let cached { return cached }
-
-        return ChromeWindowDetails(profileName: profileNameFromArguments(candidate: candidate), isExcluded: false)
+        defer { lock.unlock() }
+        return windowDetailsCache[candidate.id] ?? .included
     }
 
     /// Call from a background queue only.
@@ -170,72 +192,47 @@ final class ChromeProfileResolver {
         let resolvedWindowIDs = Set(windowDetailsCache.keys)
         lock.unlock()
 
+        let pending = candidates.filter { isChromeFamily($0.app) && !resolvedWindowIDs.contains($0.id) }
+        guard !pending.isEmpty else { return !staleWindowIDs.isEmpty }
+
         var didResolve = false
-        for candidate in candidates where isChromeFamily(candidate.app) && !resolvedWindowIDs.contains(candidate.id) {
-            let details = resolveDetails(for: candidate)
-            lock.lock()
-            windowDetailsCache[candidate.id] = details
-            lock.unlock()
-            didResolve = true
+        // One window-list fetch per process instead of one per window.
+        for (pid, windows) in Dictionary(grouping: pending, by: \.ownerPID) {
+            let axWindows = axWindowsByID(pid: pid)
+            for candidate in windows {
+                // Leave the entry unresolved when the app did not answer, so the next warm-up retries.
+                guard let axWindow = axWindows[candidate.id] else { continue }
+                let details = inspect(axWindow: axWindow)
+                lock.lock()
+                windowDetailsCache[candidate.id] = details
+                lock.unlock()
+                didResolve = true
+            }
         }
 
         return didResolve || !staleWindowIDs.isEmpty
     }
 
-    private func resolveDetails(for candidate: WindowCandidate) -> ChromeWindowDetails {
-        guard let window = axWindow(app: candidate.app, windowID: candidate.id) else {
-            return ChromeWindowDetails(profileName: profileNameFromArguments(candidate: candidate), isExcluded: false)
-        }
-
-        let role = axString(window, attribute: kAXRoleAttribute)
-        let subrole = axString(window, attribute: kAXSubroleAttribute)
+    private func inspect(axWindow: AXUIElement) -> ChromeWindowDetails {
+        let role = axString(axWindow, attribute: kAXRoleAttribute)
+        let subrole = axString(axWindow, attribute: kAXSubroleAttribute)
         guard role == kAXWindowRole, subrole == kAXStandardWindowSubrole else {
-            return ChromeWindowDetails(profileName: nil, isExcluded: true)
+            return .excluded
         }
 
-        if let profileName = profileNameFromArguments(candidate: candidate) {
-            return ChromeWindowDetails(profileName: profileName, isExcluded: false)
-        }
-
-        let userDataDirectories = self.userDataDirectories(for: candidate)
-        let profileName = profileNameFromAccessibility(window: window, userDataDirectories: userDataDirectories)
-        return ChromeWindowDetails(profileName: profileName, isExcluded: false)
+        let title = axString(axWindow, attribute: kAXTitleAttribute) ?? ""
+        return ChromeWindowDetails(profileName: Self.profileName(fromTitle: title), isExcluded: false)
     }
 
-    private func profileNameFromArguments(candidate: WindowCandidate) -> String? {
-        let arguments = arguments(for: candidate.ownerPID)
-        guard let profileDirectory = profileDirectory(from: arguments) else { return nil }
-
-        if let userDataDirectory = userDataDirectory(from: arguments),
-           let name = displayName(for: profileDirectory, userDataDirectory: userDataDirectory) {
-            return name
-        }
-
-        for directory in userDataDirectories(for: candidate) {
-            if let name = displayName(for: profileDirectory, userDataDirectory: directory) {
-                return name
-            }
-        }
-
-        return profileDirectory
-    }
-
-    private func userDataDirectories(for candidate: WindowCandidate) -> [URL] {
-        let arguments = arguments(for: candidate.ownerPID)
-        return userDataDirectory(from: arguments).map { [$0] } ?? defaultUserDataDirectories(for: candidate.app)
-    }
-
-    private func arguments(for pid: pid_t) -> [String] {
-        lock.lock()
-        let cached = argumentsCache[pid]
-        lock.unlock()
-        if let cached { return cached }
-
-        let arguments = processArguments(pid: pid)
-        lock.lock()
-        argumentsCache[pid] = arguments
-        lock.unlock()
-        return arguments
+    /// `"Page title - Google Chrome - Alice (Work)"` -> `"Alice (Work)"`. The page title may itself
+    /// contain ` - `, so the browser name is looked for in the second-to-last segment.
+    static func profileName(fromTitle title: String) -> String? {
+        let segments = title.components(separatedBy: " - ")
+        guard segments.count >= 3 else { return nil }
+        let browser = segments[segments.count - 2]
+        guard ["Chrome", "Chromium", "Edge", "Brave"].contains(where: { browser.contains($0) }) else { return nil }
+        let name = segments[segments.count - 1].trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 
     private func isChromeFamily(_ app: NSRunningApplication) -> Bool {
@@ -253,105 +250,21 @@ final class ChromeProfileResolver {
             || name.contains("Microsoft Edge")
     }
 
-    private func profileDirectory(from arguments: [String]) -> String? {
-        argumentValue(named: "--profile-directory", in: arguments)
-    }
-
-    private func userDataDirectory(from arguments: [String]) -> URL? {
-        argumentValue(named: "--user-data-dir", in: arguments).map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-    }
-
-    private func argumentValue(named name: String, in arguments: [String]) -> String? {
-        for (index, argument) in arguments.enumerated() {
-            if argument == name, arguments.indices.contains(index + 1) {
-                return arguments[index + 1]
-            }
-            if argument.hasPrefix(name + "=") {
-                return String(argument.dropFirst(name.count + 1))
-            }
-        }
-        return nil
-    }
-
-    private func defaultUserDataDirectories(for app: NSRunningApplication) -> [URL] {
-        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        guard let applicationSupport else { return [] }
-
-        switch app.bundleIdentifier {
-        case "com.microsoft.edgemac":
-            return [applicationSupport.appendingPathComponent("Microsoft Edge")]
-        case "com.brave.Browser":
-            return [applicationSupport.appendingPathComponent("BraveSoftware/Brave-Browser")]
-        case "org.chromium.Chromium":
-            return [applicationSupport.appendingPathComponent("Chromium")]
-        default:
-            return [
-                applicationSupport.appendingPathComponent("Google/Chrome"),
-                applicationSupport.appendingPathComponent("Google/Chrome Beta"),
-                applicationSupport.appendingPathComponent("Google/Chrome Canary")
-            ]
-        }
-    }
-
-    private func profileNameFromAccessibility(window: AXUIElement, userDataDirectories: [URL]) -> String? {
-        let knownProfileNames = userDataDirectories.flatMap { profileNames(userDataDirectory: $0) }
-        guard !knownProfileNames.isEmpty else { return nil }
-        return firstProfileName(in: window, profileNames: knownProfileNames)
-    }
-
-    private func axWindow(app: NSRunningApplication, windowID: CGWindowID) -> AXUIElement? {
-        let appElement = AXSupport.application(pid: app.processIdentifier)
+    private func axWindowsByID(pid: pid_t) -> [CGWindowID: AXUIElement] {
+        let appElement = AXSupport.application(pid: pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
               let windows = value as? [AXUIElement] else {
-            return nil
+            return [:]
         }
 
-        return windows.first { axWindowNumber($0) == windowID }
-    }
-
-    private func profileNames(userDataDirectory: URL) -> [String] {
-        let names = loadProfileNames(userDataDirectory: userDataDirectory).values
-        return names
-            .filter { !$0.isEmpty && $0 != "Person 1" && $0 != "Default" }
-            .sorted { $0.count > $1.count }
-    }
-
-    private func firstProfileName(in element: AXUIElement, profileNames: [String]) -> String? {
-        var visited = 0
-        return firstProfileName(in: element, profileNames: profileNames, visited: &visited)
-    }
-
-    private func firstProfileName(in element: AXUIElement, profileNames: [String], visited: inout Int) -> String? {
-        visited += 1
-        guard visited < 500 else { return nil }
-
-        for attribute in [
-            kAXTitleAttribute,
-            kAXDescriptionAttribute,
-            kAXValueAttribute,
-            kAXHelpAttribute
-        ] {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
-                  let text = value as? String else { continue }
-            if let match = profileNames.first(where: { text.localizedCaseInsensitiveContains($0) }) {
-                return match
+        var result: [CGWindowID: AXUIElement] = [:]
+        for window in windows {
+            if let id = axWindowNumber(window), result[id] == nil {
+                result[id] = window
             }
         }
-
-        var childrenValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-              let children = childrenValue as? [AXUIElement] else {
-            return nil
-        }
-
-        for child in children {
-            if let match = firstProfileName(in: child, profileNames: profileNames, visited: &visited) {
-                return match
-            }
-        }
-        return nil
+        return result
     }
 
     private func axString(_ element: AXUIElement, attribute: String) -> String? {
@@ -374,79 +287,5 @@ final class ChromeProfileResolver {
             return number.uint32Value
         }
         return nil
-    }
-
-    private func displayName(for profileDirectory: String, userDataDirectory: URL) -> String? {
-        lock.lock()
-        var cache = localStateCache[userDataDirectory]
-        lock.unlock()
-
-        if cache == nil {
-            let loaded = loadProfileNames(userDataDirectory: userDataDirectory)
-            lock.lock()
-            localStateCache[userDataDirectory] = loaded
-            lock.unlock()
-            cache = loaded
-        }
-        return cache?[profileDirectory]
-    }
-
-    private func loadProfileNames(userDataDirectory: URL) -> [String: String] {
-        let localStateURL = userDataDirectory.appendingPathComponent("Local State")
-        guard let data = try? Data(contentsOf: localStateURL),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let profile = root["profile"] as? [String: Any],
-              let infoCache = profile["info_cache"] as? [String: Any] else {
-            return [:]
-        }
-
-        var result: [String: String] = [:]
-        for (directory, value) in infoCache {
-            guard let details = value as? [String: Any],
-                  let name = details["name"] as? String,
-                  !name.isEmpty else { continue }
-            result[directory] = name
-        }
-        return result
-    }
-
-    private func processArguments(pid: pid_t) -> [String] {
-        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-        var size = 0
-        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 0 else {
-            return []
-        }
-
-        var buffer = [UInt8](repeating: 0, count: size)
-        guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0, size >= MemoryLayout<Int32>.size else {
-            return []
-        }
-
-        let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
-        guard argc > 0 else { return [] }
-
-        var offset = MemoryLayout<Int32>.size
-        while offset < size, buffer[offset] != 0 {
-            offset += 1
-        }
-        while offset < size, buffer[offset] == 0 {
-            offset += 1
-        }
-
-        var arguments: [String] = []
-        for _ in 0..<argc {
-            guard offset < size else { break }
-            let start = offset
-            while offset < size, buffer[offset] != 0 {
-                offset += 1
-            }
-            if start < offset, let argument = String(bytes: buffer[start..<offset], encoding: .utf8) {
-                arguments.append(argument)
-            }
-            while offset < size, buffer[offset] == 0 {
-                offset += 1
-            }
-        }
-        return arguments
     }
 }

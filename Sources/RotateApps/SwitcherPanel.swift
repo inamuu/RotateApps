@@ -4,8 +4,17 @@ final class SwitcherPanel: NSPanel {
     private let content = NSStackView()
     private let settings: SettingsStore
     private var itemViews: [SwitcherItemView] = []
+    private var itemViewsByWindowID: [CGWindowID: SwitcherItemView] = [:]
     private var visibleWindowIDs: [CGWindowID] = []
     private var currentLayout: GridLayout?
+    private var currentStyle: ItemStyle?
+
+    /// Everything an item view bakes in at creation time; a change here forces new views.
+    private struct ItemStyle: Equatable {
+        let itemSize: CGFloat
+        let showThumbnails: Bool
+        let theme: SwitcherTheme
+    }
 
     private struct GridLayout: Equatable {
         let columns: Int
@@ -38,17 +47,47 @@ final class SwitcherPanel: NSPanel {
         orderFrontRegardless()
     }
 
+    /// The panel is kept alive between sessions, so hiding is an `orderOut` rather than a close.
+    func hide() {
+        orderOut(nil)
+    }
+
+    /// Item views are reused by window ID: a refresh that only changes labels or badges touches
+    /// nothing else, and only a change in membership or geometry re-lays the grid.
     func update(windows: [WindowInfo], selectedIndex: Int) {
         let ids = windows.map(\.id)
         let layout = gridLayout(itemCount: windows.count)
+        let style = ItemStyle(itemSize: layout.itemSize, showThumbnails: settings.showThumbnails, theme: settings.theme)
+
+        if style != currentStyle {
+            itemViewsByWindowID.removeAll()
+            currentStyle = style
+        }
+
+        var views: [SwitcherItemView] = []
+        views.reserveCapacity(windows.count)
+        for window in windows {
+            if let existing = itemViewsByWindowID[window.id] {
+                existing.update(window: window)
+                views.append(existing)
+            } else {
+                let view = SwitcherItemView(window: window, size: style.itemSize, showThumbnail: style.showThumbnails, theme: style.theme)
+                itemViewsByWindowID[window.id] = view
+                views.append(view)
+            }
+        }
+        let liveIDs = Set(ids)
+        itemViewsByWindowID = itemViewsByWindowID.filter { liveIDs.contains($0.key) }
+        itemViews = views
 
         if ids != visibleWindowIDs || layout != currentLayout {
-            content.arrangedSubviews.forEach { view in
-                content.removeArrangedSubview(view)
-                view.removeFromSuperview()
-            }
-            itemViews = windows.map {
-                SwitcherItemView(window: $0, size: layout.itemSize, showThumbnail: settings.showThumbnails, theme: settings.theme)
+            content.arrangedSubviews.forEach { row in
+                content.removeArrangedSubview(row)
+                (row as? NSStackView)?.arrangedSubviews.forEach { item in
+                    (row as? NSStackView)?.removeArrangedSubview(item)
+                    item.removeFromSuperview()
+                }
+                row.removeFromSuperview()
             }
 
             for rowIndex in 0..<layout.rows {

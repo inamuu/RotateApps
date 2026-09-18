@@ -10,6 +10,8 @@ RotateApps is a lightweight macOS window switcher inspired by Windows Alt+Tab. I
 - Hold `Shift` with the configured shortcut to rotate backward.
 - Separate entries for multiple windows in the same app.
 - Window title plus optional thumbnail so similar windows can be distinguished.
+- Chrome-family windows show their profile as a coloured badge and stripe (each profile keeps its own colour). The name is read from the Accessibility window title, so no tree walk is needed.
+- Thumbnails are captured in the background at reduced size and cached between presses, and the switcher panel is built once at launch, so the first press is as quick as the rest.
 - Same-app window activation uses AX window number first, then window position/size matching, so Chrome/Finder multi-window switching works more reliably.
 - Regular desktop apps only; accessory/background helper apps are filtered out.
 - All windows are shown in a centered grid.
