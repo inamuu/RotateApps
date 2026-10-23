@@ -30,10 +30,10 @@ enum SwitcherTheme: String, CaseIterable {
     var accentColor: NSColor {
         switch self {
         case .system: return .controlAccentColor
-        case .blue: return NSColor(calibratedRed: 0.27, green: 0.55, blue: 0.92, alpha: 1)
-        case .graphite: return NSColor(calibratedRed: 0.62, green: 0.66, blue: 0.72, alpha: 1)
-        case .green: return NSColor(calibratedRed: 0.22, green: 0.68, blue: 0.46, alpha: 1)
-        case .rose: return NSColor(calibratedRed: 0.88, green: 0.38, blue: 0.55, alpha: 1)
+        case .blue: return NSColor(calibratedRed: 0.00, green: 0.48, blue: 1.00, alpha: 1)
+        case .graphite: return NSColor(calibratedRed: 0.95, green: 0.96, blue: 0.98, alpha: 1)
+        case .green: return NSColor(calibratedRed: 0.00, green: 0.80, blue: 0.40, alpha: 1)
+        case .rose: return NSColor(calibratedRed: 1.00, green: 0.22, blue: 0.45, alpha: 1)
         }
     }
 

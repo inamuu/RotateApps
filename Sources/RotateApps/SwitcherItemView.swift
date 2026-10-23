@@ -3,17 +3,28 @@ import AppKit
 /// A stable colour per profile name, so the same Chrome profile always shows up in the same colour.
 enum ProfilePalette {
     private static let colors: [NSColor] = [
-        NSColor(calibratedRed: 0.20, green: 0.55, blue: 0.95, alpha: 1), // blue
-        NSColor(calibratedRed: 0.92, green: 0.44, blue: 0.20, alpha: 1), // orange
-        NSColor(calibratedRed: 0.22, green: 0.70, blue: 0.45, alpha: 1), // green
-        NSColor(calibratedRed: 0.80, green: 0.32, blue: 0.70, alpha: 1), // purple
-        NSColor(calibratedRed: 0.90, green: 0.30, blue: 0.35, alpha: 1), // red
-        NSColor(calibratedRed: 0.15, green: 0.68, blue: 0.72, alpha: 1), // teal
-        NSColor(calibratedRed: 0.85, green: 0.65, blue: 0.10, alpha: 1), // amber
-        NSColor(calibratedRed: 0.50, green: 0.45, blue: 0.90, alpha: 1)  // indigo
+        blue, orange, green, violet, red, teal, yellow
+    ]
+
+    private static let blue = NSColor(calibratedRed: 0.05, green: 0.45, blue: 1.00, alpha: 1)
+    private static let orange = NSColor(calibratedRed: 1.00, green: 0.50, blue: 0.00, alpha: 1)
+    private static let green = NSColor(calibratedRed: 0.05, green: 0.72, blue: 0.25, alpha: 1)
+    private static let violet = NSColor(calibratedRed: 0.50, green: 0.25, blue: 1.00, alpha: 1)
+    private static let red = NSColor(calibratedRed: 0.95, green: 0.15, blue: 0.15, alpha: 1)
+    private static let teal = NSColor(calibratedRed: 0.00, green: 0.70, blue: 0.80, alpha: 1)
+    private static let yellow = NSColor(calibratedRed: 1.00, green: 0.80, blue: 0.00, alpha: 1)
+
+    /// Names that spell out a colour ("profile_green", "Work") get that colour; the rest are hashed.
+    private static let keywordColors: [(String, NSColor)] = [
+        ("work", blue), ("blue", blue), ("orange", orange), ("green", green), ("purple", violet),
+        ("violet", violet), ("red", red), ("teal", teal), ("yellow", yellow)
     ]
 
     static func color(for name: String) -> NSColor {
+        let lowered = name.lowercased()
+        if let match = keywordColors.first(where: { lowered.contains($0.0) }) {
+            return match.1
+        }
         // FNV-1a keeps the mapping stable across launches, unlike `hashValue`.
         var hash: UInt32 = 2_166_136_261
         for byte in name.utf8 {
@@ -126,7 +137,7 @@ final class SwitcherItemView: NSView {
             profileStripe.leadingAnchor.constraint(equalTo: leadingAnchor),
             profileStripe.topAnchor.constraint(equalTo: topAnchor),
             profileStripe.bottomAnchor.constraint(equalTo: bottomAnchor),
-            profileStripe.widthAnchor.constraint(equalToConstant: 5),
+            profileStripe.widthAnchor.constraint(equalToConstant: 6),
             headerRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             headerRow.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -7),
             headerRow.topAnchor.constraint(equalTo: topAnchor, constant: 8),
@@ -184,10 +195,10 @@ final class SwitcherItemView: NSView {
     private func updateSelection() {
         let profileColor = windowInfo.profileName.map(ProfilePalette.color(for:))
         layer?.borderColor = isSelected ? theme.accentColor.cgColor : NSColor.clear.cgColor
-        layer?.borderWidth = isSelected ? 3 : 2
-        let restingColor = profileColor?.withAlphaComponent(0.16) ?? theme.cardColor
-        layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.55) : restingColor).cgColor
-        imageView.layer?.borderWidth = isSelected ? 1 : 0
+        layer?.borderWidth = isSelected ? 5 : 2
+        let restingColor = profileColor?.withAlphaComponent(0.30) ?? theme.cardColor
+        layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.40) : restingColor).cgColor
+        imageView.layer?.borderWidth = isSelected ? 2 : 0
         imageView.layer?.borderColor = theme.accentColor.cgColor
     }
 
@@ -237,5 +248,9 @@ final class ProfileBadgeView: NSView {
     func configure(text: String, color: NSColor) {
         label.stringValue = text
         layer?.backgroundColor = color.cgColor
+        // White text washes out on light fills such as yellow.
+        let rgb = color.usingColorSpace(.sRGB) ?? color
+        let luminance = 0.299 * rgb.redComponent + 0.587 * rgb.greenComponent + 0.114 * rgb.blueComponent
+        label.textColor = luminance > 0.6 ? .black : .white
     }
 }
