@@ -198,8 +198,6 @@ final class SwitcherItemView: NSView {
         layer?.borderWidth = isSelected ? 5 : 2
         let restingColor = profileColor?.withAlphaComponent(0.30) ?? theme.cardColor
         layer?.backgroundColor = (isSelected ? theme.accentColor.withAlphaComponent(0.40) : restingColor).cgColor
-        imageView.layer?.borderWidth = isSelected ? 2 : 0
-        imageView.layer?.borderColor = theme.accentColor.cgColor
     }
 
     /// The cached thumbnail (or the app icon) is shown at once; a fresh capture replaces it when
