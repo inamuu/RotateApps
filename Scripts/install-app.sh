@@ -25,7 +25,10 @@ if pgrep -x RotateApps >/dev/null 2>&1; then
 fi
 
 echo "Installing to $INSTALLED_APP..."
-rm -rf "$INSTALLED_APP"
+if [ -e "$INSTALLED_APP" ]; then
+    # Move the old copy to the Trash instead of deleting it, so it can be recovered.
+    mv "$INSTALLED_APP" "$HOME/.Trash/RotateApps-$(date +%Y%m%d%H%M%S).app"
+fi
 cp -R "$BUILT_APP" "$INSTALLED_APP"
 
 open "$INSTALLED_APP"
